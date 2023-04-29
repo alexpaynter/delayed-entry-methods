@@ -17,7 +17,7 @@ survfit_median_helper <- function(survfit_obj) {
     
     tab %>%
         select(
-            strata,
+            stratum,
             median_surv = median,
             median_surv_lcb =  `0.95LCL`,
             median_surv_ucb = `0.95UCL`
