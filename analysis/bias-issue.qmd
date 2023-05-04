@@ -1,0 +1,100 @@
+---
+title: "Bias issue - empirical latent vs truth"
+format: html
+---
+
+```{r}
+
+
+library(here)
+library(purrr)
+library(survival)
+library(tidyverse)
+library(magrittr)
+purrr::walk(.x = here("R", dir(here("R"))),
+            .f = source)
+```
+
+
+## Introduction
+
+In Kehl (2023), (doi: 10.1158/1055-9965.EPI-22-0875), they generate time to event cohorts under various conditions.  The focus of the paper is on the bias in median survival, comparing over statistical methods and data generation schemes.
+
+Let T be the time to event of interest, and X be the time to cohort entry, and C be the time to censoring. If I'm understanding the paper code, the "true" median survival is calculated based on the latent survival times before the truncation and censoring are applied.  That is, all T.  The motivation for this is that the true distribution (and therefore median) T probably does not have a closed form solution with the complicated data generation schemes required by the scientific setting. 
+
+I believe this will cause a systematic underestimation of the true bias, because many of the latent T are also observed, so deviations from the underlying truth would tend to correlate in the observed and latent observations.
+
+The point of this document is to investigate that suspicion empirically using simulations.  If there is an issue with this, there are proposals to alter the simulation scheme.
+
+## Data generation
+
+We want a clear underlying truth, so our data generation methods are simple.  We generate $T, X, C$ (the event, cohort entry and censoring times respectively) from uncorrelated exponential distributions.  Setting a goal of 20% truncation and 20% censoring, we set
+
+- $\lambda_t := 1$
+- $\lambda_x := 4$
+- $\lambda_c := 0.27$
+
+The following replication show that these rates give us roughly the correct proportions for censoring and truncation:
+
+```{r}
+reps <- purrr::map_dfr(
+    .x = sample.int(n = 100),
+    .f = (function(x) {
+        gen_one_arm_exp(lambda_t = 1, 
+                        lambda_x = 4, 
+                        lambda_c = 0.27, 
+                        n = 1000,
+                        gen_seed = x) %>%
+            eval_prop_trunc_cens(.)
+    })
+)
+reps %>% summarize(across(.cols = everything(), .fns = ~mean(.)))
+```
+
+Our statistical methods only have access to $Y := \min(T,C)$ and the marker for an event, $E := I(T<C)$.  The true median survival time under these settings is $\ln(2)/\lambda_t = 0.6931.
+
+## Two concepts of truth
+
+We will compare the two concepts of truth:
+
+- **Analytic:** The analytically known median for the data generating process:  $\ln(2)/\lambda_t = 0.6931$.
+- **Empirical:** The mean $T$ in the underlying latent distribution, ignoring truncation and censoring.
+
+These will be used within each simulation to find the two bias calculations (analytical and empirical), and then we can average over all simulations to find whether the two concepts differ.
+
+```{r}
+reps <- 2
+sims <- tibble(
+    n = c(50,500,5000),
+    lambda_t = 1,
+    lambda_c = 0.27,
+    lambda_x = 4
+) %>%
+    slice(rep(1:n(), each = 2)) %>%
+    mutate(repetition = rep(1:reps, times = n()/reps),
+           rand_seed = sample.int(n()))
+
+sims %<>%
+    mutate(
+        res = purrr::pmap(
+            .l = list(lambda_t = lambda_t,
+                      lambda_x = lambda_x,
+                      lambda_c = lambda_c,
+                      n = n, 
+                      gen_seed = rand_seed),
+            .f = gen_one_arm_exp
+        )
+    ) 
+
+sims %>%
+    mutate(
+        ev = purrr::map(
+            .x = res,
+            .f = eval_prop_trunc_cens
+        )
+    ) %>%
+    unnest(ev)
+
+```
+
+
