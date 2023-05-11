@@ -11,6 +11,8 @@ library(purrr)
 library(survival)
 library(tidyverse)
 library(magrittr)
+library(huxtable)
+library(ggplot2)
 purrr::walk(.x = here("R", dir(here("R"))),
             .f = source)
 ```
@@ -62,15 +64,21 @@ We will compare the two concepts of truth:
 
 These will be used within each simulation to find the two bias calculations (analytical and empirical), and then we can average over all simulations to find whether the two concepts differ.
 
+## Simulation
+
+Expand the chunk below to see the simulation code.
+
 ```{r}
-reps <- 2
+#| code-fold: true
+#| code-summary: "Show the code"
+reps <- 500
 sims <- tibble(
-    n = c(50,500,5000),
+    n = c(20, 50, 500, 5000),
     lambda_t = 1,
     lambda_c = 0.27,
     lambda_x = 4
 ) %>%
-    slice(rep(1:n(), each = 2)) %>%
+    slice(rep(1:n(), each = reps)) %>%
     mutate(repetition = rep(1:reps, times = n()/reps),
            rand_seed = sample.int(n()))
 
@@ -86,15 +94,115 @@ sims %<>%
         )
     ) 
 
-sims %>%
+sims %<>% 
     mutate(
-        ev = purrr::map(
-            .x = res,
-            .f = eval_prop_trunc_cens
+        observed = purrr::map(.x = res, .f = \(x) x$observed),
+        latent = purrr::map(.x = res, .f = \(x) x$latent),
+    )
+
+# Get the "latent empirical" and analytical truth in each simulation:
+sims %<>%
+    mutate(
+        median_surv_true_empirical = purrr::map_dbl(
+            .x = latent,
+            .f = \(x) median(x$t, na.rm = T)
+        ),
+        median_surv_true_analytical = log(2)/lambda_t
+    )
+
+# Estimate the median survival in each simulation using a reasonable method:
+sims %<>%
+    mutate(
+        ev_risk_set = purrr::map_dfr(
+            .x = observed,
+            .f = method_risk_set_adj_one_arm
         )
     ) %>%
-    unnest(ev)
+    unnest(ev_risk_set) 
+
+sims %<>%
+    mutate(
+        bias_analytical = median_surv_hat - median_surv_true_analytical,
+        bias_empirical = median_surv_hat - median_surv_true_empirical,
+        coverage_analytical = coverage_helper(
+            median_surv_true_analytical,
+            median_surv_hat_lcb,
+            median_surv_hat_ucb
+        ),
+        coverage_empirical = coverage_helper(
+            median_surv_true_empirical,
+            median_surv_hat_lcb,
+            median_surv_hat_ucb
+        )
+    )
+
+sim_long <- sims %>%
+    select(n, contains("bias_"), contains("coverage_")) %>%
+    pivot_longer(
+        cols = -n,
+        names_to = "measure",
+        values_to = "val"
+    ) %>%
+    tidyr::separate(col = "measure", into = c("metric", "type")) %>%
+    mutate(abs_val = abs(val)) %>%
+    # the previous did nothing to coverage, but we mark it as missing anwyay
+    # because it makes no sense.
+    mutate(abs_val = if_else(metric %in% "coverage",
+                             NA_real_,
+                             abs_val))
+
+sim_sum <- sim_long %>% 
+    group_by(metric, n, type) %>%
+    summarize(
+        mean = mean(val, na.rm = T),
+        mad = median(abs_val, na.rm = T),
+        .groups = "drop"
+    ) 
+```
+
+## Results
+
+Average bias, median absolute deviation of bias, and the coverage proportion for each simulation setting:
+
+```{r}
+sim_sum %>%
+    huxtable::huxtable(.) %>%
+    huxtable::theme_compact(.)
+```
+
+Plot of the outcomes from each simulation:
+
+```{r}
+
+sim_plot <- filter(sim_long, metric %in% "bias") %>%
+    mutate(n = factor(n))
+ggplot(
+    data = sim_plot,
+    aes(x = n, y = val, fill = type)
+) +
+    geom_boxplot(outlier.shape = NA) + 
+    geom_point(position = position_jitterdodge(
+        jitter.width= 0.2
+    ),
+               alpha = 0.1,
+               size = 0.25,
+               color = "black") + 
+    #     dodge.width = 0.5, 
+    #     jitter.width = 0.1, 
+    #     jitter.height = 0),
+    #     alpha = 0.5,
+    #     size = 0.25
+    # ) + 
+    labs(x = "Sample size", y = "Per simluation bias")
+    
 
 ```
 
 
+## Conclusion
+
+The issue is there - at small sample sizes the bias magnitude (MAD) in each simulation is systematically underestimated.  However, the effect seems relatively small, and would not account for any major problems with their large sample size conclusions.  There is a larger effect on coverage (this concept of truth overestimates coverage) that does *not* appear to disappear with sample size.
+
+We can fix this in the future by keeping the complicated data generation processes, but use a fixed grid of parameters for things that are typically set in advance for the study.  For example, fix sample size, then generate the data that way millions of times to get a less noisy idea of the truth (which we presume cannot be calculated in a closed form way).  We could also use a grid of parameters for distribution parameters, hazard rate, proportion of the cohort with a biomarker, etc. 
+
+It's hard to know how severe this problem would be in more complicated data generation scenarios, but we can investigate that further once we reconfigure the code to operate on more fixed parameters.

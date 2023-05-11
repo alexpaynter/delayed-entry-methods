@@ -4,10 +4,10 @@
 #' 
 #' @details doi: 10.1158/1055-9965.EPI-22-0875.  This code is based on 
 gen_one_arm_exp <- function(
+        n,
         lambda_t,
         lambda_x,
         lambda_c,
-        n,
         gen_seed = NULL,
         return_type = 'both'
 ) {
@@ -26,15 +26,17 @@ gen_one_arm_exp <- function(
         set.seed(gen_seed)
         dat <- tibble(
             x = rexp(n = latent_n, rate = lambda_x),
-            t = rexp(n = latent_n, rate = lambda_t)
+            t = rexp(n = latent_n, rate = lambda_t),
+            c = rexp(n = latent_n, rate = lambda_c),
         )
         
         n_poss_obs <- dat %>% filter(x <= t) %>% nrow
         if (n_poss_obs >= n) {
             dat %<>% 
-                mutate(not_truncated = x <= t,
+                mutate(not_truncated = x <= pmin(t,c),
                        cum_nt = cumsum(not_truncated),
-                       last_case = cum_nt == n & lag(cum_nt) != n) %>% 
+                       last_case = cum_nt == n & lag(cum_nt) != n) #
+            dat %<>% 
                 slice(1:which(last_case %in% 1)) %>%
                 select(-c(not_truncated, cum_nt, last_case))
                 # we stop recruiting at n cases in reality.
@@ -46,15 +48,11 @@ gen_one_arm_exp <- function(
         }
     }
     
-    set.seed(gen_seed+1) # so we get consistent results for c also
     latent_df <- dat %>%
-        mutate(
-            c = rexp(n = n(), lambda_c),
-        ) %>% 
         mutate(
             # give each subject a unique ID:
             id = paste0("s-", stringr::str_pad(1:n(),
-                                               width = ceiling(log10(n))+1,
+                                               width = ceiling(log10(n()))+1,
                                                side = "left",
                                                pad = "0")),
             event = if_else(t < c, 1, 0),
@@ -66,7 +64,7 @@ gen_one_arm_exp <- function(
         filter(y > x) %>%
         # not sure if I'll ever need this, but can't hurt.
         mutate(id_obs = paste0("obs-", stringr::str_pad(1:n(),
-                                                        width = 5,
+                                                        width = ceiling(log10(n()))+1,
                                                         side = "left",
                                                         pad = "0"))) %>%
         # We do not get to see the latent survival/censor times, but we
