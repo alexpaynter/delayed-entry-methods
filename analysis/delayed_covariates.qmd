@@ -1,0 +1,158 @@
+---
+title: "Delayed Covariates"
+format: 
+  html: 
+    fig-width: 4
+    fig-height: 3
+---
+
+## Introduction
+
+A document to organize some thoughts around delayed covariates.  Specifically, I'm thinking about semi-fixed genotypes like BCA status at the moment.  What does it mean to have them available later on, how does it impact the analysis, etc.
+
+
+```{r}
+#| output: false 
+#| echo: false 
+
+library(here)
+library(purrr)
+library(glue)
+library(survival)
+library(tidyverse)
+library(magrittr)
+library(huxtable)
+library(ggplot2)
+library(survminer)
+
+library(tidymodels)
+library(broom)
+library(censored)
+purrr::walk(.x = here("R", dir(here("R"))),
+            .f = source)
+
+```
+
+## Data generation
+
+```{r}
+#| output: true
+#| echo: true
+dat_list <- gen_one_arm_exp(
+    n = 2000,
+    lambda_t = 1,
+    lambda_x = 8,
+    lambda_c = 0.2,
+    gen_seed = NULL
+)
+
+dat <- dat_list$observed %>%
+    # Add a random covariate that's unrelated to survival or entry times.
+    mutate(a = rbinom(n = n(), size = 1, prob = 0.25))
+```
+
+I'm interested in the following approaches:
+
+1. Treating the entry as delayed, with $a$ as a covariate on entry.
+1. Trying to treat $a$ as a time varying predictor (split into two periods each).
+1. Treating the cohort as if followup started at $a$.
+
+I suspect the first two will be the same, and the third will be different (estimating a different quantity, conditional on surviving up to genetic testing).
+
+### Approach 1
+
+```{r}
+surv_obj_1 <- with(dat, Surv(time = x, time2 = y, event = event))
+cox_1 <- coxph(surv_obj_1 ~ a, data = dat) %>% 
+    broom::tidy(., exponentiate = T, conf.int = T)
+cox_1
+survfit(surv_obj_1 ~ a, data = dat)
+survfit(surv_obj_1 ~ a, data = dat) %>%
+    ggsurvplot(., data = dat)
+```
+
+### Approach 2
+
+The data needs to be reshaped into a "broken apart" form to do this:
+
+```{r}
+dat_broken <- dat %>%
+    group_by(id_obs) %>%
+    slice(rep(1,2)) %>%
+    mutate(
+        int_start = if_else(row_number() %in% 1, 0, x),
+        int_end = if_else(row_number() %in% 1, x, y),
+        int_event = if_else(row_number() %in% 1, 0, event),
+        int_a = if_else(row_number() %in% 1, NA_real_, a)
+    )
+
+surv_obj_2 <- with(
+    dat_broken,
+    Surv(time = int_start, time2 = int_end, event = int_event)
+)
+cox_2 <- coxph(surv_obj_2 ~ a, data = dat_broken) %>% 
+    broom::tidy(., exponentiate = T, conf.int = T)
+cox_2
+survfit(surv_obj_2 ~ a, data = dat_broken) # for medians.
+survfit(surv_obj_2 ~ a, data = dat_broken) %>%
+    ggsurvplot(., data = dat_broken)
+```
+
+Approaches 1 and 2 appear to be very similar, but not identical annoyingly.
+
+### Approach 3
+
+Now we're estimating with the time of $x$ being zero.
+
+```{r}
+dat_cond <- dat %>%
+    mutate(cond_t = y-x)
+surv_obj_3 <- with(dat_cond, Surv(time = cond_t, event = event))
+cox_3 <- coxph(surv_obj_3 ~ a, data = dat_cond) %>% 
+    broom::tidy(., exponentiate = T, conf.int = T)
+cox_3
+survfit(surv_obj_3 ~ a, data = dat_cond)
+survfit(surv_obj_3 ~ a, data = dat_cond) %>%
+    ggsurvplot(., data = dat)
+```
+
+## Correct answers
+
+The correct coefficient for $a$ is zero (no effect at all).
+
+With $\lambda_t = 1$, the correct median survival in appraoches 1 and 2 is $\ln(2)/1 = 0.693$ in both groups.  
+
+The exponential distribution is memoryless, so $E[Y-X|Y>X] = E[Y]$.  This wouldn't generally hold obviously so these approaches are not in any way the same thing.  We can simulate to confirm:
+
+```{r}
+wrap <- function() {
+    dat <- gen_one_arm_exp(
+        n = 100,
+        lambda_t = 1,
+        lambda_x = 8,
+        lambda_c = 0.2,
+        gen_seed = NULL
+    ) 
+    dat$latent %>%
+        filter(y >= x) %>%
+        mutate(latent_t = t-x) %>%
+        summarize(med_t = median(latent_t)) %>%
+        pull(med_t)
+}
+reps <- suppressMessages(
+    replicate(n = 100, expr = wrap(), simplify = F)
+)
+unlist(reps) %>% mean
+
+```
+
+Yep, close enough.  So the correct median survival in approach 3 is also this, but only because we used an exponential distribution (I'm realizing how dumb this is now).
+
+## Conclusions
+
+There's no reason to use time-varying confounder models if a covariate is measured after baseline.  We don't consider them at risk until they enter, so the covariate attribution won't be messed up by that.  If we have a covariate that affects $X$ (very likely if the covariate affects disease state) then we have a different story.
+
+
+
+
+

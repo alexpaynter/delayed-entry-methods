@@ -4,8 +4,6 @@ format: html
 ---
 
 ```{r}
-
-
 library(here)
 library(purrr)
 library(survival)
