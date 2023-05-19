@@ -1,0 +1,19 @@
+I like scenarios 1 and 3/4 from the paper associated with https://github.com/prissmmnlp/informative_entry_sims
+
+I don't care for scenario 2 because it implies that >50% of participants will be truncated, and it seems ludicrous to me that a person has a roughly equal chance of being tested X=x months after death as they do X=x months before death.  
+
+Scenario 3 is basically a zero inflated exponential at the end of the day, with the 0-3 month people being an extended concept of 0.  The problem is the inflation is extreme, with up to 95% of the cohort being drawn from that group, and there's too many random variables to keep track of what's going on.  It also has the same problems as scenario 2 since the late testing scheme is the same.
+
+I don't like scenario 4 for a few reasons:  (1) people can't die until they progress here, so there's built in immortal time bias in the simulation (2) The sum of two exponentials is an exponential, so this complexity reduces even further and (3) I'm not sure why only T and P (progression) would be directly related to A (the underlying biomarker).  Certainly signs of a biomarker could affect whether genomic testing was indicated. 
+
+Some modifications of the above:
+
+Scenario 1:  
+- Use a more complex distribution for T, at least a Weibull distribution.  This avoids the unrealistic memoryless property, which can be misleading in simulations. 
+- X being uniform bothers me.  Many people are never tested in. a cohort so saying everyone gets tested by 1 year isn't realistic.  The support should be [0, Inf) for this - though that does violate the assumptions of some models that assume X < C with probability 1 (I think).  I would say Weibull for this too, independent of T.
+- C being uniform is fine - scaled Beta probably better but not important to tinker with.
+
+Scenario 3/4:
+- Z ~ normal(0,1), with p_z at maybe two levels (0.05 and 0.5).  I'm thinking of this as a latent covariate which affects both X and T.  
+- T and X weibull, with an inverse correlation (long X indicates shorter T), i.e. negative Tau, based on Z.
+- C can stay
